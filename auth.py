@@ -19,6 +19,7 @@ import re
 import time
 from pathlib import Path
 
+import httpx
 from curl_cffi.requests import AsyncSession
 
 from config import settings
@@ -87,12 +88,37 @@ class TokenManager:
         self._source = d.get("source") or "uninit"
 
     # ------- 出站 helper -------
+    # Google 服务（securetoken / identitytoolkit）走 httpx + HTTP/2：
+    # curl_cffi BoringSSL 在 SOCKS5 隧道里对 securetoken.googleapis.com 会
+    # 触发 "TLS connect error: invalid library" 兼容 bug；Google 也不做浏览器
+    # 指纹检测，故用标准 httpx 即可。
+    # ElevenLabs / API key 自动发现仍用 curl_cffi 保持 Chrome 指纹一致。
 
     def _new_session(self) -> AsyncSession:
         return AsyncSession(
             impersonate=settings.impersonate,
             proxy=settings.proxy_url,
             timeout=30,
+        )
+
+    def _new_google_client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            proxy=settings.proxy_url,
+            http2=True,
+            timeout=20,
+            headers={
+                "accept": "*/*",
+                "origin": settings.elevenlabs_origin,
+                "referer": settings.elevenlabs_origin + "/",
+                "x-firebase-gmpid": settings.firebase_gmpid,
+                "x-client-version": settings.firebase_client_version,
+                "x-client-data": settings.firebase_client_data,
+                "user-agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/144.0.0.0 Safari/537.36"
+                ),
+            },
         )
 
     # ------- API key 自动发现 -------
@@ -194,22 +220,14 @@ class TokenManager:
 
     async def _refresh(self) -> None:
         url = f"https://securetoken.googleapis.com/v1/token?key={self._api_key}"
-        async with self._new_session() as s:
-            r = await s.post(
+        async with self._new_google_client() as c:
+            r = await c.post(
                 url,
                 data={
                     "grant_type": "refresh_token",
                     "refresh_token": self._refresh_token,
                 },
-                headers={
-                    "content-type": "application/x-www-form-urlencoded",
-                    "origin": settings.elevenlabs_origin,
-                    "referer": settings.elevenlabs_origin + "/",
-                    "x-client-version": settings.firebase_client_version,
-                    "x-firebase-gmpid": settings.firebase_gmpid,
-                    "x-client-data": settings.firebase_client_data,
-                },
-                timeout=20,
+                headers={"content-type": "application/x-www-form-urlencoded"},
             )
         if r.status_code != 200:
             raise AuthError(f"securetoken refresh {r.status_code}: {r.text[:300]}")
@@ -219,8 +237,8 @@ class TokenManager:
         self._expires_at = time.time() + int(j.get("expires_in", "3600"))
         self._source = "refresh"
         log.info(
-            "[auth] refreshed via securetoken, expires_in=%ss",
-            int(j.get("expires_in", 3600)),
+            "[auth] refreshed via securetoken (HTTP/%s), expires_in=%ss",
+            r.http_version, int(j.get("expires_in", 3600)),
         )
 
     async def _signin_password(self) -> None:
@@ -228,8 +246,8 @@ class TokenManager:
             "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword"
             f"?key={self._api_key}"
         )
-        async with self._new_session() as s:
-            r = await s.post(
+        async with self._new_google_client() as c:
+            r = await c.post(
                 url,
                 json={
                     "email": settings.elevenlabs_email,
@@ -237,15 +255,7 @@ class TokenManager:
                     "returnSecureToken": True,
                     "clientType": "CLIENT_TYPE_WEB",
                 },
-                headers={
-                    "content-type": "application/json",
-                    "origin": settings.elevenlabs_origin,
-                    "referer": settings.elevenlabs_origin + "/",
-                    "x-client-version": settings.firebase_client_version,
-                    "x-firebase-gmpid": settings.firebase_gmpid,
-                    "x-client-data": settings.firebase_client_data,
-                },
-                timeout=25,
+                headers={"content-type": "application/json"},
             )
         if r.status_code != 200:
             raise AuthError(f"signInWithPassword {r.status_code}: {r.text[:300]}")
@@ -255,9 +265,8 @@ class TokenManager:
         self._expires_at = time.time() + int(j.get("expiresIn", "3600"))
         self._source = "password"
         log.info(
-            "[auth] signed in as %s, expires_in=%ss",
-            j.get("email"),
-            int(j.get("expiresIn", 3600)),
+            "[auth] signed in as %s (HTTP/%s), expires_in=%ss",
+            j.get("email"), r.http_version, int(j.get("expiresIn", 3600)),
         )
 
 
