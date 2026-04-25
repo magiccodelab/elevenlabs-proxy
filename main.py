@@ -1,14 +1,14 @@
 """FastAPI 入口。
 
 启动期硬性校验：
-1) SOCKS5 代理可用
-2) 通过代理出口 IP == EXPECTED_EGRESS_IP
-3) ElevenLabs Bearer token 有效
-
-任一失败即拒绝启动，避免直连泄露真实 IP。
+1) SOCKS5 代理可用 + 出口 IP 校验
+2) Firebase API key 已知（.env 或自动发现）
+3) ElevenLabs token 已就绪（refresh / 登录 / 静态兜底）
+4) /v1/auth-account 端到端验证
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -22,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 import upstream
+from auth import background_refresher, token_manager
 from config import settings
 
 logging.basicConfig(
@@ -30,7 +31,6 @@ logging.basicConfig(
 )
 log = logging.getLogger("elevenlabs-proxy")
 
-# MVP：内存中保留最近一次合成的音频，按 audio_id 索引
 AUDIO_CACHE: dict[str, bytes] = {}
 AUDIO_CACHE_MAX = 32
 
@@ -48,17 +48,33 @@ async def lifespan(app: FastAPI):
         )
     log.info("[boot] 代理 OK，出口 IP=%s", ip)
 
-    log.info("[boot] 校验 ElevenLabs token ...")
+    log.info("[boot] 初始化凭证 ...")
+    token_status = await token_manager.initialize()
+    log.info("[boot] token source=%s, expires_in=%ss",
+             token_status["source"], token_status["expires_in_seconds"])
+
+    log.info("[boot] 校验账号 ...")
     info = await upstream.fetch_auth_account()
-    log.info("[boot] token OK，账号=%s (%s)", info.get("email"), info.get("auth_account_id"))
+    log.info("[boot] account=%s (%s)", info.get("email"), info.get("auth_account_id"))
 
     app.state.egress_ip = ip
     app.state.account_email = info.get("email")
-    yield
-    log.info("[shutdown]")
+
+    stop = asyncio.Event()
+    refresher = asyncio.create_task(background_refresher(stop))
+    try:
+        yield
+    finally:
+        stop.set()
+        refresher.cancel()
+        try:
+            await refresher
+        except (asyncio.CancelledError, Exception):
+            pass
+        log.info("[shutdown]")
 
 
-app = FastAPI(title="elevenlabs-proxy", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="elevenlabs-proxy", version="0.2.0", lifespan=lifespan)
 
 
 class TTSRequest(BaseModel):
@@ -75,7 +91,6 @@ def _evt(obj: dict) -> bytes:
 def _put_audio(data: bytes) -> str:
     aid = uuid.uuid4().hex
     if len(AUDIO_CACHE) >= AUDIO_CACHE_MAX:
-        # FIFO 简单淘汰
         for k in list(AUDIO_CACHE)[: len(AUDIO_CACHE) - AUDIO_CACHE_MAX + 1]:
             AUDIO_CACHE.pop(k, None)
     AUDIO_CACHE[aid] = data
@@ -84,12 +99,14 @@ def _put_audio(data: bytes) -> str:
 
 @app.get("/api/health")
 async def health():
+    ts = token_manager.status()
     return {
         "ok": True,
         "egress_required": settings.expected_egress_ip,
         "egress_actual": getattr(app.state, "egress_ip", None),
         "account": getattr(app.state, "account_email", None),
         "impersonate": settings.impersonate,
+        "token": ts,
     }
 
 
@@ -101,8 +118,11 @@ async def tts(req: TTSRequest):
 
     async def gen() -> AsyncIterator[bytes]:
         t0 = time.perf_counter()
+        ts = token_manager.status()
         yield _evt({"type": "log", "level": "info",
                     "msg": f"接收文本 ({len(req.text)} 字符) voice={voice_id} model={model_id} stability={stability}"})
+        yield _evt({"type": "log", "level": "info",
+                    "msg": f"凭证 source={ts['source']}, 还剩 {ts['expires_in_seconds']}s 过期"})
         yield _evt({"type": "log", "level": "info",
                     "msg": f"经 {settings.proxy_url} → ElevenLabs (impersonate={settings.impersonate})"})
 
@@ -146,5 +166,4 @@ async def get_audio(audio_id: str):
     )
 
 
-# 前端
 app.mount("/", StaticFiles(directory="static", html=True), name="static")

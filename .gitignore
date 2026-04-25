@@ -14,6 +14,7 @@ venv/
 .env
 .env.*
 !.env.example
+.auth.json
 
 # uv lock 可保留；缓存忽略
 .uv/

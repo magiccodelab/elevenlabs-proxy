@@ -4,6 +4,8 @@
 - SOCKS5 代理（启动期已校验出口 IP）
 - curl_cffi `impersonate` 复刻 Chrome 的 TLS / HTTP-2 / UA / sec-ch-ua 指纹
 - 复刻 elevenlabs.io 的 Origin / Referer
+
+token 由 auth.TokenManager 异步提供（自动续期）。
 """
 from __future__ import annotations
 
@@ -13,6 +15,7 @@ from typing import AsyncIterator
 
 from curl_cffi.requests import AsyncSession
 
+from auth import token_manager
 from config import settings
 
 log = logging.getLogger(__name__)
@@ -28,10 +31,11 @@ _BROWSER_HEADERS = {
 }
 
 
-def _auth_headers() -> dict[str, str]:
+async def _auth_headers() -> dict[str, str]:
+    token = await token_manager.get_id_token()
     return {
         **_BROWSER_HEADERS,
-        "authorization": f"Bearer {settings.elevenlabs_bearer_token}",
+        "authorization": f"Bearer {token}",
         "content-type": "application/json",
     }
 
@@ -55,17 +59,16 @@ async def fetch_egress_ip() -> str:
 
 
 async def fetch_auth_account() -> dict:
-    """用当前 token 调 /v1/auth-account 验证有效性。"""
+    """调 /v1/auth-account 验证当前 token 在上游可用。"""
+    headers = await _auth_headers()
     async with _session() as s:
         r = await s.get(
             f"{settings.elevenlabs_base_url}/v1/auth-account",
-            headers=_auth_headers(),
+            headers=headers,
             timeout=20,
         )
         if r.status_code == 401:
-            raise RuntimeError(
-                "ElevenLabs token 无效或已过期，请更新 .env 中 ELEVENLABS_BEARER_TOKEN"
-            )
+            raise RuntimeError("ElevenLabs 拒绝当前 token (401)")
         r.raise_for_status()
         return r.json()
 
@@ -83,11 +86,12 @@ async def text_to_dialogue_stream(
         "model_id": model_id,
         "settings": {"stability": stability},
     }
+    headers = await _auth_headers()
     async with _session() as s:
         async with s.stream(
             "POST",
             f"{settings.elevenlabs_base_url}/v1/text-to-dialogue/stream",
-            headers=_auth_headers(),
+            headers=headers,
             json=body,
             timeout=120,
         ) as r:

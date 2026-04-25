@@ -23,6 +23,12 @@ function appendLog(level, msg) {
   logEl.scrollTop = logEl.scrollHeight;
 }
 
+function fmtDuration(sec) {
+  sec = Math.max(0, Math.floor(sec || 0));
+  const m = Math.floor(sec / 60), s = sec % 60;
+  return m ? `${m}m${String(s).padStart(2, "0")}s` : `${s}s`;
+}
+
 async function bootHealth() {
   try {
     const r = await fetch("/api/health");
@@ -32,15 +38,21 @@ async function bootHealth() {
     eg.textContent = `egress ${j.egress_actual || "?"} ${ok ? "✓" : "✗"} (要求 ${j.egress_required})`;
     eg.classList.remove("wait", "ok", "bad");
     eg.classList.add(ok ? "ok" : "bad");
-    $("account").textContent = `账号 ${j.account || "?"} · impersonate=${j.impersonate}`;
+    const tok = j.token || {};
+    $("account").textContent =
+      `账号 ${j.account || "?"} · impersonate=${j.impersonate} · ` +
+      `token=${tok.source || "?"}` +
+      (tok.expires_in_seconds != null ? ` (剩 ${fmtDuration(tok.expires_in_seconds)})` : "");
     appendLog(ok ? "ok" : "error",
-      `health: egress=${j.egress_actual} (要求 ${j.egress_required}), account=${j.account}, impersonate=${j.impersonate}`);
+      `health: egress=${j.egress_actual} (要求 ${j.egress_required}), account=${j.account}, ` +
+      `impersonate=${j.impersonate}, token=${tok.source} 剩 ${fmtDuration(tok.expires_in_seconds)}`);
   } catch (e) {
     $("egress").textContent = "health failed";
     $("egress").classList.remove("wait", "ok"); $("egress").classList.add("bad");
     appendLog("error", "health 接口失败: " + e);
   }
 }
+setInterval(bootHealth, 30_000);
 
 $("clear").onclick = () => { logEl.innerHTML = ""; statsEl.textContent = ""; };
 
