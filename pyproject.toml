@@ -4,4 +4,9 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "curl-cffi>=0.15.0",
+    "fastapi>=0.136.1",
+    "pydantic-settings>=2.14.0",
+    "uvicorn[standard]>=0.46.0",
+]
