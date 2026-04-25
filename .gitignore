@@ -39,3 +39,6 @@ htmlcov/
 # 本地 HAR / 抓包文件（含敏感信息，禁止入库）
 *.har
 samples/
+
+# 本地资料：HAR 抓包、内部文档，不入库
+_local/
