@@ -167,3 +167,16 @@ async def get_audio(audio_id: str):
 
 
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
+
+
+if __name__ == "__main__":
+    # 允许 `python main.py` 直接启动；标准方式仍是 `uvicorn main:app`
+    import uvicorn
+
+    uvicorn.run(
+        "main:app",
+        host=settings.host,
+        port=settings.port,
+        reload=False,
+        log_level="info",
+    )
