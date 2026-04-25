@@ -130,6 +130,10 @@ class TokenManager:
             log.info("[auth] 自动发现 Firebase API key …")
             self._api_key = await self._discover_api_key()
             log.info("[auth] api_key=%s…%s", self._api_key[:6], self._api_key[-4:])
+        # 一次性引导：.env 里给了 refresh_token 且本地状态无（或不一致），覆盖之
+        if settings.elevenlabs_refresh_token and not self._refresh_token:
+            log.info("[auth] 采用 .env ELEVENLABS_REFRESH_TOKEN 引导首次刷新")
+            self._refresh_token = settings.elevenlabs_refresh_token
         # 强制 obtain
         await self.get_id_token(force=True)
         return self.status()
@@ -201,7 +205,9 @@ class TokenManager:
                     "content-type": "application/x-www-form-urlencoded",
                     "origin": settings.elevenlabs_origin,
                     "referer": settings.elevenlabs_origin + "/",
-                    "x-client-version": "Chrome/JsCore/10.14.1/FirebaseCore-web",
+                    "x-client-version": settings.firebase_client_version,
+                    "x-firebase-gmpid": settings.firebase_gmpid,
+                    "x-client-data": settings.firebase_client_data,
                 },
                 timeout=20,
             )
@@ -235,7 +241,9 @@ class TokenManager:
                     "content-type": "application/json",
                     "origin": settings.elevenlabs_origin,
                     "referer": settings.elevenlabs_origin + "/",
-                    "x-client-version": "Chrome/JsCore/10.14.1/FirebaseCore-web",
+                    "x-client-version": settings.firebase_client_version,
+                    "x-firebase-gmpid": settings.firebase_gmpid,
+                    "x-client-data": settings.firebase_client_data,
                 },
                 timeout=25,
             )

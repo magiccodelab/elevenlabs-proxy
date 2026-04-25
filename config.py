@@ -21,9 +21,15 @@ class Settings(BaseSettings):
     elevenlabs_email: str | None = None
     elevenlabs_password: str | None = None
     elevenlabs_bearer_token: str | None = None
+    # 一次性引导：从浏览器 IndexedDB 拷出来的 refresh_token，
+    # 程序首次启动会用它换 id_token 并持久化（之后再改回为空也无妨）
+    elevenlabs_refresh_token: str | None = None
 
     # Firebase（留空则启动时从 elevenlabs.io 主页自动发现）
     firebase_api_key: str | None = None
+    firebase_gmpid: str = "1:265222077342:web:3acce90d1596672570348f"
+    firebase_client_version: str = "Chrome/JsCore/11.2.0/FirebaseCore-web"
+    firebase_client_data: str = "CKmdygEIlfLKAQiSocsBCIWgzQE="
     token_state_path: str = ".auth.json"
     # 提前续期（默认在过期前 5 分钟刷新）
     refresh_safety_seconds: int = 300
